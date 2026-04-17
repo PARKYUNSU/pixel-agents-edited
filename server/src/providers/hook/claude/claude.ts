@@ -12,6 +12,7 @@ import {
   installHooks as installerInstallHooks,
   uninstallHooks as installerUninstallHooks,
 } from './claudeHookInstaller.js';
+import { parseClaudeJsonlTranscriptLine } from './claudeJsonlTranscript.js';
 import { claudeTeamProvider } from './claudeTeamProvider.js';
 
 // ── formatToolStatus: moved from src/transcriptParser.ts ──
@@ -250,6 +251,7 @@ export const claudeProvider: HookProvider = {
 
   getSessionDirs,
   sessionFilePattern: '*.jsonl',
+  parseTranscriptLine: parseClaudeJsonlTranscriptLine,
   buildLaunchCommand,
 
   team: claudeTeamProvider,

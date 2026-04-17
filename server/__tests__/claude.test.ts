@@ -21,6 +21,10 @@ describe('claudeProvider', () => {
       expect(claudeProvider.team).toBeDefined();
       expect(claudeProvider.team?.providerId).toBe('claude');
     });
+    it('exposes parseTranscriptLine for JSONL polling', () => {
+      expect(claudeProvider.parseTranscriptLine).toBeDefined();
+      expect(claudeProvider.parseTranscriptLine?.('')).toEqual([]);
+    });
   });
 
   describe('normalizeHookEvent', () => {

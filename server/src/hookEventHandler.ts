@@ -350,6 +350,10 @@ export class HookEventHandler {
       case 'progress':
         // Not yet consumed by the office visualization. Silently drop.
         return;
+      default:
+        // Transcript-only AgentEvent kinds (tokenUsage, teamMetadata, jsonlProgress, …)
+        // are handled in the extension via applyTranscriptAgentEvent; hooks never emit them.
+        return;
     }
   }
 

@@ -5,6 +5,11 @@
  * provider types will be added when a real second provider (Codex, Goose,
  * Discord, etc.) actually lands, derived from that provider's needs rather than
  * speculation.
+ *
+ * Transcript lines: `HookProvider.parseTranscriptLine` turns each JSONL line into
+ * `AgentEvent[]` (token usage, team metadata, tool starts, user/tool_result blocks,
+ * progress rows, turn boundaries, etc.). The VS Code extension applies those
+ * events in order; hook POSTs still use `normalizeHookEvent` only.
  */
 
 import type { TeamProvider } from './teamProvider.js';
@@ -28,7 +33,20 @@ export type AgentEvent =
   | { kind: 'progress'; toolId: string; data: unknown }
   | { kind: 'permissionRequest' }
   | { kind: 'sessionStart'; source?: string }
-  | { kind: 'sessionEnd'; reason?: string };
+  | { kind: 'sessionEnd'; reason?: string }
+  // ── Transcript / JSONL (HookProvider.parseTranscriptLine only; never from hooks) ──
+  | { kind: 'tokenUsage'; inputTokensDelta: number; outputTokensDelta: number }
+  | { kind: 'teamMetadata'; teamName: string; agentName?: string }
+  | { kind: 'textIdle' }
+  /** Emitted once before the first toolStart for an assistant line that contains tool_use blocks. */
+  | { kind: 'transcriptAssistantToolTurnStart' }
+  | { kind: 'transcriptUserPrompt' }
+  | { kind: 'transcriptToolResultBlock'; toolUseId: string; block: Record<string, unknown> }
+  | { kind: 'transcriptBackgroundDone'; toolUseId: string }
+  | { kind: 'jsonlProgress'; record: Record<string, unknown> }
+  | { kind: 'jsonlTurnDuration' }
+  | { kind: 'jsonlUnknownType'; recordType: string }
+  | { kind: 'jsonlParseWarning'; detail?: string };
 
 // ── Hook-based Provider (CLIs with hooks APIs) ────────────────
 
@@ -66,8 +84,13 @@ export interface HookProvider {
   getSessionDirs?(workspacePath: string): string[];
   /** Glob pattern for session files (e.g., '*.jsonl'). */
   readonly sessionFilePattern?: string;
-  /** Parse one line of a transcript file into an AgentEvent. */
-  parseTranscriptLine?(line: string): AgentEvent | null;
+  /**
+   * Parse one JSONL line from this CLI's transcript file into normalized events.
+   * Empty or non-JSON lines should yield `[]`; malformed JSON may yield `[]` or
+   * `jsonlParseWarning` depending on provider policy. The extension applies each
+   * event in order via `applyTranscriptAgentEvent` (see `src/transcriptParser.ts`).
+   */
+  parseTranscriptLine?(line: string): AgentEvent[];
   /** Build CLI launch command for +Agent button. */
   buildLaunchCommand?(
     sessionId: string,
