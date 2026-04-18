@@ -11,6 +11,8 @@ import {
 } from '../server/src/providers/hook/claude/claudeHookInstaller.js';
 import { claudeProvider, copyHookScript } from '../server/src/providers/index.js';
 import { PixelAgentsServer } from '../server/src/server.js';
+import type { AgentProviderKind } from './agentLaunchSettings.js';
+import { resolveAgentLaunchProfile } from './agentLaunchSettings.js';
 import {
   getProjectDirPath,
   launchNewTerminal,
@@ -21,6 +23,7 @@ import {
   sendExistingAgents,
   sendLayout,
 } from './agentManager.js';
+import { pickAgentProviderIfMissing } from './agentProviderQuickPick.js';
 import type { LoadedAssets, LoadedCharacterSprites } from './assetLoader.js';
 import {
   loadCharacterSprites,
@@ -336,6 +339,28 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'openClaude') {
         const prevAgentIds = new Set(this.agents.keys());
+        const rawProvider = message.provider as string | undefined;
+        let providerOverride: AgentProviderKind | undefined =
+          rawProvider === 'claude' || rawProvider === 'gemini' || rawProvider === 'ollama'
+            ? rawProvider
+            : undefined;
+        let bypassPermissions = message.bypassPermissions as boolean | undefined;
+
+        // Old webview / marketplace build without `provider` → always fell back to Claude.
+        // Ask in the extension host so Gemini/Ollama still work without rebuilding the webview.
+        if (!providerOverride) {
+          const picked = await pickAgentProviderIfMissing();
+          if (!picked) return;
+          providerOverride = picked.provider;
+          bypassPermissions = picked.bypassPermissions ?? bypassPermissions;
+        }
+
+        const profile = await resolveAgentLaunchProfile(
+          this.context,
+          bypassPermissions,
+          providerOverride,
+        );
+        if (!profile) return;
         await launchNewTerminal(
           this.nextAgentId,
           this.nextTerminalIndex,
@@ -351,11 +376,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.webview,
           this.persistAgents,
           message.folderPath as string | undefined,
-          message.bypassPermissions as boolean | undefined,
+          profile,
         );
         // Register newly created agent(s) with hook handler
         for (const [id, agent] of this.agents) {
-          if (!prevAgentIds.has(id)) {
+          if (!prevAgentIds.has(id) && !agent.hooksOnly) {
             this.registerAgentHook(agent);
           }
         }

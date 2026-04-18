@@ -5,6 +5,11 @@ import * as vscode from 'vscode';
 
 import { JSONL_POLL_INTERVAL_MS } from '../server/src/constants.js';
 import {
+  type AgentLaunchProfile,
+  shellQuotePosix,
+  terminalPrefixFor,
+} from './agentLaunchSettings.js';
+import {
   TERMINAL_NAME_PREFIX,
   WORKSPACE_KEY_AGENT_SEATS,
   WORKSPACE_KEY_AGENTS,
@@ -74,8 +79,8 @@ export async function launchNewTerminal(
   projectScanTimerRef: { current: ReturnType<typeof setInterval> | null },
   webview: vscode.Webview | undefined,
   persistAgents: () => void,
-  folderPath?: string,
-  bypassPermissions?: boolean,
+  folderPath: string | undefined,
+  profile: AgentLaunchProfile,
 ): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
   // Use home directory as fallback cwd when no workspace is open (common on Linux/macOS).
@@ -84,6 +89,75 @@ export async function launchNewTerminal(
   const cwd = folderPath || folders?.[0]?.uri.fsPath || os.homedir();
   const isMultiRoot = !!(folders && folders.length > 1);
   const idx = nextTerminalIndexRef.current++;
+
+  if (profile.kind === 'gemini' || profile.kind === 'ollama') {
+    const prefix = terminalPrefixFor(profile.kind);
+    const env: Record<string, string> = { ...process.env } as Record<string, string>;
+    if (profile.kind === 'gemini' && profile.geminiApiKey) {
+      env.GEMINI_API_KEY = profile.geminiApiKey;
+    }
+    if (profile.kind === 'ollama' && profile.ollamaHost) {
+      env.OLLAMA_HOST = profile.ollamaHost;
+    }
+    const terminal = vscode.window.createTerminal({
+      name: `${prefix} #${idx}`,
+      cwd,
+      env,
+    });
+    terminal.show();
+
+    if (profile.kind === 'gemini') {
+      const launch = profile.geminiLaunchCommand ?? 'gemini';
+      const model = profile.geminiModel ?? 'gemini-2.5-flash';
+      terminal.sendText(`${launch} -m ${shellQuotePosix(model)}`);
+    } else {
+      const model = profile.ollamaModel ?? 'llama3';
+      terminal.sendText(`ollama run ${shellQuotePosix(model)}`);
+    }
+
+    const sessionId = crypto.randomUUID();
+    const id = nextAgentIdRef.current++;
+    const folderName = isMultiRoot && cwd ? path.basename(cwd) : undefined;
+    const agent: AgentState = {
+      id,
+      sessionId,
+      terminalRef: terminal,
+      isExternal: false,
+      projectDir: cwd,
+      jsonlFile: '',
+      fileOffset: 0,
+      lineBuffer: '',
+      activeToolIds: new Set(),
+      activeToolStatuses: new Map(),
+      activeToolNames: new Map(),
+      activeSubagentToolIds: new Map(),
+      activeSubagentToolNames: new Map(),
+      backgroundAgentToolIds: new Set(),
+      isWaiting: false,
+      permissionSent: false,
+      hadToolsInTurn: false,
+      lastDataAt: Date.now(),
+      linesProcessed: 0,
+      seenUnknownRecordTypes: new Set(),
+      folderName,
+      hookDelivered: true,
+      hooksOnly: true,
+      providerId: profile.kind,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+
+    agents.set(id, agent);
+    activeAgentIdRef.current = id;
+    persistAgents();
+    console.log(
+      `[Pixel Agents] Terminal: Agent ${id} - ${profile.kind} (hooks-only, no Claude JSONL) → ${terminal.name}`,
+    );
+    webview?.postMessage({ type: 'agentCreated', id, folderName });
+    return;
+  }
+
+  // ── Claude Code (JSONL + hooks) ─────────────────────────────
   const terminal = vscode.window.createTerminal({
     name: `${TERMINAL_NAME_PREFIX} #${idx}`,
     cwd,
@@ -91,7 +165,8 @@ export async function launchNewTerminal(
   terminal.show();
 
   const sessionId = crypto.randomUUID();
-  const claudeCmd = bypassPermissions
+  const bypass = profile.bypassPermissions;
+  const claudeCmd = bypass
     ? `claude --session-id ${sessionId} --dangerously-skip-permissions`
     : `claude --session-id ${sessionId}`;
   terminal.sendText(claudeCmd);
@@ -128,6 +203,7 @@ export async function launchNewTerminal(
     seenUnknownRecordTypes: new Set(),
     folderName,
     hookDelivered: false,
+    providerId: 'claude',
     inputTokens: 0,
     outputTokens: 0,
   };
@@ -202,7 +278,12 @@ export async function launchNewTerminal(
         // Possible /resume: terminal started a different session than expected.
         // Check every tick for a file modified after the agent was created.
         try {
-          const trackedFiles = new Set([...agents.values()].map((a) => path.resolve(a.jsonlFile)));
+          const trackedFiles = new Set(
+            [...agents.values()]
+              .map((a) => a.jsonlFile)
+              .filter(Boolean)
+              .map((f) => path.resolve(f)),
+          );
           const candidates = fs
             .readdirSync(projectDir)
             .filter((f) => f.endsWith('.jsonl'))
@@ -294,6 +375,8 @@ export function persistAgents(
       jsonlFile: agent.jsonlFile,
       projectDir: agent.projectDir,
       folderName: agent.folderName,
+      hooksOnly: agent.hooksOnly || undefined,
+      providerId: agent.providerId,
       teamName: agent.teamName,
       agentName: agent.agentName,
       isTeamLead: agent.isTeamLead,
@@ -332,17 +415,18 @@ export function restoreAgents(
     // Skip agents already in the map — prevents duplicate file watchers on re-entry
     // (webviewReady fires on every panel focus, re-calling restoreAgents each time)
     if (agents.has(p.id)) {
-      knownJsonlFiles.add(p.jsonlFile);
+      if (p.jsonlFile) knownJsonlFiles.add(p.jsonlFile);
       continue;
     }
 
     let terminal: vscode.Terminal | undefined;
     const isExternal = p.isExternal ?? false;
+    const hooksOnlyRestore = !!(p.hooksOnly || (!p.jsonlFile && !isExternal));
 
     if (isExternal) {
       // External agents — restore if JSONL file still exists on disk
       try {
-        if (!fs.existsSync(p.jsonlFile)) continue;
+        if (!p.jsonlFile || !fs.existsSync(p.jsonlFile)) continue;
       } catch {
         continue;
       }
@@ -354,7 +438,9 @@ export function restoreAgents(
 
     const agent: AgentState = {
       id: p.id,
-      sessionId: p.sessionId || path.basename(p.jsonlFile, '.jsonl'),
+      sessionId:
+        p.sessionId ||
+        (p.jsonlFile ? path.basename(p.jsonlFile, '.jsonl') : `restored-${p.id}`),
       terminalRef: terminal,
       isExternal,
       projectDir: p.projectDir,
@@ -374,7 +460,9 @@ export function restoreAgents(
       linesProcessed: 0,
       seenUnknownRecordTypes: new Set(),
       folderName: p.folderName,
-      hookDelivered: false,
+      hookDelivered: hooksOnlyRestore,
+      hooksOnly: hooksOnlyRestore || undefined,
+      providerId: p.providerId,
       inputTokens: 0,
       outputTokens: 0,
       teamName: p.teamName,
@@ -385,7 +473,7 @@ export function restoreAgents(
     };
 
     agents.set(p.id, agent);
-    knownJsonlFiles.add(p.jsonlFile);
+    if (p.jsonlFile) knownJsonlFiles.add(p.jsonlFile);
     if (isExternal) {
       console.log(
         `[Pixel Agents] Terminal: Agent ${p.id} - restored external → ${path.basename(p.jsonlFile)}`,
@@ -408,7 +496,9 @@ export function restoreAgents(
 
     // Start file watching if JSONL exists, skipping to end of file
     try {
-      if (fs.existsSync(p.jsonlFile)) {
+      if (hooksOnlyRestore || !p.jsonlFile) {
+        // Gemini / Ollama / hooks-only: no transcript file
+      } else if (fs.existsSync(p.jsonlFile)) {
         const stat = fs.statSync(p.jsonlFile);
         agent.fileOffset = stat.size;
         startFileWatching(
@@ -463,7 +553,7 @@ export function restoreAgents(
     setTimeout(() => {
       for (const id of restoredTerminalIds) {
         const agent = agents.get(id);
-        if (agent && !agent.isExternal && agent.linesProcessed === 0) {
+        if (agent && !agent.isExternal && agent.linesProcessed === 0 && !agent.hooksOnly) {
           console.log(
             `[Pixel Agents] Terminal: Agent ${id} - removing restored agent, no data received`,
           );

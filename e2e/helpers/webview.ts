@@ -125,4 +125,7 @@ export async function clickAddAgent(frame: Frame): Promise<void> {
   const btn = frame.locator('button', { hasText: '+ Agent' });
   await expect(btn).toBeVisible({ timeout: WEBVIEW_TIMEOUT_MS });
   await btn.click();
+  const claudeBtn = frame.getByRole('button', { name: 'Claude Code', exact: true });
+  await expect(claudeBtn).toBeVisible({ timeout: WEBVIEW_TIMEOUT_MS });
+  await claudeBtn.click();
 }

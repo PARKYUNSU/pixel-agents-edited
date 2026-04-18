@@ -175,6 +175,7 @@ export function readNewLines(
 ): void {
   const agent = agents.get(agentId);
   if (!agent) return;
+  if (!agent.jsonlFile) return;
   try {
     const stat = fs.statSync(agent.jsonlFile);
     if (stat.size <= agent.fileOffset) return;

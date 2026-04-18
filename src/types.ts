@@ -68,6 +68,9 @@ export interface PersistedAgent {
   isExternal?: boolean;
   jsonlFile: string;
   projectDir: string;
+  /** Gemini / Ollama terminals: no Claude JSONL; character is mostly decorative */
+  hooksOnly?: boolean;
+  providerId?: string;
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
 

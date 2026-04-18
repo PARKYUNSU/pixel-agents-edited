@@ -7,7 +7,6 @@ import { Dropdown, DropdownItem } from './ui/Dropdown.js';
 
 interface BottomToolbarProps {
   isEditMode: boolean;
-  onOpenClaude: () => void;
   onToggleEditMode: () => void;
   isSettingsOpen: boolean;
   onToggleSettings: () => void;
@@ -16,92 +15,97 @@ interface BottomToolbarProps {
 
 export function BottomToolbar({
   isEditMode,
-  onOpenClaude,
   onToggleEditMode,
   isSettingsOpen,
   onToggleSettings,
   workspaceFolders,
 }: BottomToolbarProps) {
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
-  const [isBypassMenuOpen, setIsBypassMenuOpen] = useState(false);
+  const [isProviderMenuOpen, setIsProviderMenuOpen] = useState(false);
   const folderPickerRef = useRef<HTMLDivElement>(null);
   const pendingBypassRef = useRef(false);
-  // Close folder picker / bypass menu on outside click
+  const pendingProviderRef = useRef<'claude' | 'gemini' | 'ollama'>('claude');
+
   useEffect(() => {
-    if (!isFolderPickerOpen && !isBypassMenuOpen) return;
+    if (!isFolderPickerOpen && !isProviderMenuOpen) return;
     const handleClick = (e: MouseEvent) => {
       if (folderPickerRef.current && !folderPickerRef.current.contains(e.target as Node)) {
         setIsFolderPickerOpen(false);
-        setIsBypassMenuOpen(false);
+        setIsProviderMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
-  }, [isFolderPickerOpen, isBypassMenuOpen]);
+  }, [isFolderPickerOpen, isProviderMenuOpen]);
 
   const hasMultipleFolders = workspaceFolders.length > 1;
 
-  const handleAgentClick = () => {
-    setIsBypassMenuOpen(false);
-    pendingBypassRef.current = false;
+  const postOpenAgent = (
+    provider: 'claude' | 'gemini' | 'ollama',
+    bypassPermissions: boolean,
+    folderPath?: string,
+  ) => {
+    vscode.postMessage({
+      type: 'openClaude',
+      provider,
+      bypassPermissions: provider === 'claude' && bypassPermissions ? true : undefined,
+      folderPath,
+    });
+  };
+
+  const handleProviderSelect = (
+    provider: 'claude' | 'gemini' | 'ollama',
+    bypassClaudePermissions: boolean,
+  ) => {
+    setIsProviderMenuOpen(false);
     if (hasMultipleFolders) {
-      setIsFolderPickerOpen((v) => !v);
+      pendingProviderRef.current = provider;
+      pendingBypassRef.current = provider === 'claude' && bypassClaudePermissions;
+      setIsFolderPickerOpen(true);
     } else {
-      onOpenClaude();
+      postOpenAgent(provider, bypassClaudePermissions);
     }
   };
 
-  const handleAgentHover = () => {
-    if (!isFolderPickerOpen) {
-      setIsBypassMenuOpen(true);
-    }
-  };
-
-  const handleAgentLeave = () => {
-    if (!isFolderPickerOpen) {
-      setIsBypassMenuOpen(false);
-    }
+  const handleAgentClick = () => {
+    setIsFolderPickerOpen(false);
+    setIsProviderMenuOpen((v) => !v);
   };
 
   const handleFolderSelect = (folder: WorkspaceFolder) => {
     setIsFolderPickerOpen(false);
-    const bypassPermissions = pendingBypassRef.current;
+    const bypass = pendingBypassRef.current;
+    const provider = pendingProviderRef.current;
     pendingBypassRef.current = false;
-    vscode.postMessage({ type: 'openClaude', folderPath: folder.path, bypassPermissions });
-  };
-
-  const handleBypassSelect = (bypassPermissions: boolean) => {
-    setIsBypassMenuOpen(false);
-    if (hasMultipleFolders) {
-      pendingBypassRef.current = bypassPermissions;
-      setIsFolderPickerOpen(true);
-    } else {
-      vscode.postMessage({ type: 'openClaude', bypassPermissions });
-    }
+    postOpenAgent(provider, bypass, folder.path);
   };
 
   return (
     <div className="absolute bottom-10 left-10 z-20 flex items-center gap-4 pixel-panel p-4">
-      <div
-        ref={folderPickerRef}
-        className="relative"
-        onMouseEnter={handleAgentHover}
-        onMouseLeave={handleAgentLeave}
-      >
+      <div ref={folderPickerRef} className="relative">
         <Button
           variant="accent"
           onClick={handleAgentClick}
           className={
-            isFolderPickerOpen || isBypassMenuOpen
+            isFolderPickerOpen || isProviderMenuOpen
               ? 'bg-accent-bright'
               : 'bg-accent hover:bg-accent-bright'
           }
         >
           + Agent
         </Button>
-        <Dropdown isOpen={isBypassMenuOpen}>
-          <DropdownItem onClick={() => handleBypassSelect(true)}>
-            Skip permissions mode <span className="text-2xs text-warning">⚠</span>
+        <Dropdown isOpen={isProviderMenuOpen} className="min-w-128">
+          <DropdownItem onClick={() => handleProviderSelect('claude', false)} className="text-base">
+            Claude Code
+          </DropdownItem>
+          <DropdownItem onClick={() => handleProviderSelect('claude', true)} className="text-base">
+            Claude Code — skip permissions <span className="text-2xs text-warning">⚠</span>
+          </DropdownItem>
+          <DropdownItem onClick={() => handleProviderSelect('gemini', false)} className="text-base">
+            Gemini
+          </DropdownItem>
+          <DropdownItem onClick={() => handleProviderSelect('ollama', false)} className="text-base">
+            Ollama
           </DropdownItem>
         </Dropdown>
         <Dropdown isOpen={isFolderPickerOpen} className="min-w-128">

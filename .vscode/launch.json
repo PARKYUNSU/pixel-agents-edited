@@ -16,7 +16,7 @@
 				"${workspaceFolder}/dist/**/*.js"
 			],
 			"envFile": "${workspaceFolder}/.env",
-			"preLaunchTask": "${defaultBuildTask}"
+			"preLaunchTask": "compile-extension"
 		}
 	]
 }
